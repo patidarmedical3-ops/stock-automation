@@ -139,7 +139,16 @@ def get_benchmark(months: int) -> pd.DataFrame | None:
     try:
         bdf = yf.download("^NSEI", period=f"{months + 4}mo", interval="1d",
                            auto_adjust=True, progress=False)
-        return bdf[["Close"]].dropna()
+        if bdf.empty:
+            return None
+        # yfinance sometimes returns nested/MultiIndex columns even for a
+        # single ticker — flatten so bdf["Close"] is a plain 1D Series
+        if isinstance(bdf.columns, pd.MultiIndex):
+            bdf.columns = bdf.columns.get_level_values(0)
+        close = bdf["Close"]
+        if isinstance(close, pd.DataFrame):
+            close = close.iloc[:, 0]
+        return pd.DataFrame({"Close": close}).dropna()
     except Exception as e:
         print(f"Benchmark fetch failed: {e}")
         return None
@@ -192,7 +201,9 @@ def run_backtest():
             b_entry = benchmark[benchmark.index <= as_of_date]["Close"]
             b_exit = benchmark[benchmark.index <= exit_date]["Close"]
             if not b_entry.empty and not b_exit.empty:
-                bench_ret = float((b_exit.iloc[-1] / b_entry.iloc[-1] - 1) * 100)
+                entry_val = float(np.asarray(b_entry.iloc[-1]).reshape(-1)[0])
+                exit_val = float(np.asarray(b_exit.iloc[-1]).reshape(-1)[0])
+                bench_ret = (exit_val / entry_val - 1) * 100
 
         results.append({
             "RebalanceDate": as_of_date.date(),

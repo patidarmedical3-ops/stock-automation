@@ -1,0 +1,47 @@
+name: Momentum Strategy Backtest
+
+on:
+  schedule:
+    # Runs at 03:05 UTC = 8:35 AM IST, every Monday — right after the daily
+    # report, but only once a week since a full backtest is much heavier
+    # than the daily screener and results don't shift much day to day.
+    - cron: '5 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      backtest_months:
+        description: 'Months of history to test'
+        default: '6'
+        required: false
+      hold_days:
+        description: 'Holding period in trading days (5 = ~1 week)'
+        default: '5'
+        required: false
+
+jobs:
+  run-backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backtest and send to Telegram
+        env:
+          BACKTEST_MONTHS: ${{ inputs.backtest_months || '6' }}
+          HOLD_DAYS: ${{ inputs.hold_days || '5' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python backtest.py
+
+      - name: Upload results CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-results
+          path: backtest_results.csv

@@ -76,14 +76,18 @@ def get_nse_universe() -> list[str]:
     return FALLBACK_SYMBOLS
 
 
-def compute_rsi(series: pd.Series, period: int = 14) -> float:
+def compute_rsi_series(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
+    return 100 - (100 / (1 + rs))
+
+
+def compute_rsi(series: pd.Series, period: int = 14) -> float:
+    rsi = compute_rsi_series(series, period)
     return float(rsi.iloc[-1]) if not rsi.empty and not np.isnan(rsi.iloc[-1]) else 50.0
 
 
@@ -127,11 +131,26 @@ def fetch_and_score(symbols: list[str]) -> pd.DataFrame:
                 ret_3m = (close.iloc[-1] / close.iloc[-63] - 1) * 100 if len(close) > 63 else np.nan
                 dma50 = float(close.tail(50).mean())
                 vol_ratio = float(volume.tail(5).mean() / avg_vol_20) if avg_vol_20 > 0 else 1.0
-                rsi14 = compute_rsi(close, 14)
+                rsi_series = compute_rsi_series(close, 14)
+                rsi14 = float(rsi_series.iloc[-1]) if not np.isnan(rsi_series.iloc[-1]) else 50.0
                 above_50dma = last_price > dma50
 
                 if any(pd.isna(x) for x in [ret_1m, ret_3m]):
                     continue
+
+                # --- Objective technical flags (informational only, not recommendations) ---
+                flags = []
+                rsi_peak_10 = float(rsi_series.tail(10).max())
+                rsi_drop = rsi_peak_10 - rsi14
+                if rsi_peak_10 > 75 and rsi_drop > 15:
+                    flags.append(f"⚠️ RSI cooling from {rsi_peak_10:.0f} peak")
+
+                extension_pct = (last_price / dma50 - 1) * 100 if dma50 > 0 else 0
+                if extension_pct > 25:
+                    flags.append(f"⚠️ {extension_pct:.0f}% above 50DMA (extended)")
+
+                if vol_ratio < 0.8:
+                    flags.append("📉 Volume drying up")
 
                 rows.append({
                     "Symbol": sym,
@@ -142,6 +161,7 @@ def fetch_and_score(symbols: list[str]) -> pd.DataFrame:
                     "RSI14": round(rsi14, 1),
                     "VolRatio": round(vol_ratio, 2),
                     "Above50DMA": above_50dma,
+                    "Flags": " | ".join(flags),
                 })
             except Exception:
                 continue
@@ -179,11 +199,14 @@ def format_telegram_message(df: pd.DataFrame) -> list[str]:
     lines = [header]
     body = ""
     for i, row in top.iterrows():
-        body += (
+        entry = (
             f"<b>{i+1}. {row['Symbol']}</b>  ₹{row['LTP']}\n"
             f"   1D: {row['1D%']:+.2f}%  |  1M: {row['1M%']:+.2f}%  |  3M: {row['3M%']:+.2f}%\n"
-            f"   RSI14: {row['RSI14']}  |  VolRatio: {row['VolRatio']}x  |  Score: {row['MomentumScore']:.1f}\n\n"
+            f"   RSI14: {row['RSI14']}  |  VolRatio: {row['VolRatio']}x  |  Score: {row['MomentumScore']:.1f}\n"
         )
+        if row.get("Flags"):
+            entry += f"   {row['Flags']}\n"
+        body += entry + "\n"
 
     # Telegram messages cap at 4096 chars; split into chunks if needed
     messages = []
@@ -195,6 +218,14 @@ def format_telegram_message(df: pd.DataFrame) -> list[str]:
         current += line + "\n\n"
     if current.strip():
         messages.append(current)
+
+    if messages:
+        messages[-1] += (
+            "\n<i>Flags are objective data points, not recommendations:\n"
+            "⚠️ RSI cooling = momentum may be fading from an overbought peak\n"
+            "⚠️ Extended = price has run up far from its 50-day average\n"
+            "📉 Volume drying = recent volume is below its 20-day average</i>"
+        )
 
     return messages
 
